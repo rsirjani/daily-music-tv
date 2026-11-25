@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Daily Music</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  Daily Music's TV screen: a Google Cast receiver for the living-room Shield.
+  A slow-moving wallpaper made from the album art, and a small card in the corner
+  with the song, artist, album and time. Playback is the Cast framework's own
+  (the Daily Music helper on the home PC sends the albums).
+  Open with ?demo to preview the look in an ordinary browser.
+-->
+<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<style>
+:root{--fg:#f5f5f7;--muted:rgba(245,245,247,.62);--dx:0px;--dy:0px}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07070a;color:var(--fg);cursor:none;
+  font-family:"Google Sans","Product Sans",Roboto,"Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+#au{display:none}
+
+/* --- wallpaper: the album art, blurred and drifting; two scenes cross-fade between albums --- */
+.scene{position:absolute;inset:0;opacity:0;transition:opacity 3s ease}
+.scene.on{opacity:1}
+.layer{position:absolute;inset:-18%;background:center/cover no-repeat;will-change:transform}
+.l1{filter:blur(80px) saturate(1.6) brightness(.72);animation:drift1 80s ease-in-out infinite alternate}
+.l2{filter:blur(46px) saturate(1.9) brightness(.85);opacity:.42;mix-blend-mode:screen;animation:drift2 57s ease-in-out infinite alternate}
+@keyframes drift1{from{transform:scale(1.08) rotate(-2deg) translate(-2%,-1%)}to{transform:scale(1.32) rotate(3deg) translate(3%,2%)}}
+@keyframes drift2{from{transform:scale(1.55) rotate(9deg) translate(7%,-5%)}to{transform:scale(1.25) rotate(-7deg) translate(-6%,5%)}}
+/* with no art yet: a quiet moving glow */
+#glow{position:absolute;inset:-20%;opacity:.55;filter:blur(60px);animation:drift2 70s ease-in-out infinite alternate;
+  background:radial-gradient(40% 40% at 30% 35%,#3a2c5a 0,transparent 70%),radial-gradient(45% 45% at 70% 65%,#173a4a 0,transparent 70%)}
+#veil{position:absolute;inset:0;transition:background-color 1.5s ease;
+  background:radial-gradient(ellipse at 50% 42%,rgba(0,0,0,0) 0%,rgba(0,0,0,.28) 58%,rgba(0,0,0,.72) 100%)}
+body.paused .layer,body.paused #glow{animation-play-state:paused}
+body.paused #veil{background-color:rgba(0,0,0,.28)}
+
+/* --- the corner card (moves a few pixels now and then so nothing burns in) --- */
+#dock{position:absolute;left:5vh;bottom:5vh;transform:translate(var(--dx),var(--dy));transition:transform 6s ease}
+#card{display:flex;align-items:center;gap:2.6vh;padding:2.2vh 3.2vh 2.2vh 2.2vh;border-radius:2.6vh;
+  background:rgba(10,10,14,.36);box-shadow:0 1vh 4vh rgba(0,0,0,.3);
+  opacity:0;transform:translateY(2vh);transition:opacity 1.4s ease,transform 1.4s ease}
+#card.show{opacity:.94;transform:none}
+#card.show.dim{opacity:.55}
+#thumb{flex:none;width:13vh;height:13vh;border-radius:1.4vh;background:#26262c center/cover no-repeat;box-shadow:0 .6vh 2vh rgba(0,0,0,.4)}
+.tx{width:32vw;min-width:0}
+#song{display:flex;align-items:center;gap:1.2vh;font-size:3.3vh;font-weight:600;line-height:1.25}
+#song span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#pz{flex:none;display:none;width:2.4vh;height:2.4vh;fill:var(--fg);opacity:.8}
+body.paused #pz{display:block}
+#meta{margin-top:.5vh;font-size:2.3vh;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{margin-top:1.7vh;height:.5vh;border-radius:.3vh;background:rgba(255,255,255,.18);overflow:hidden}
+.bar i{display:block;height:100%;width:0;border-radius:.3vh;background:var(--fg);transition:width .5s linear}
+.times{display:grid;grid-template-columns:1fr auto 1fr;margin-top:.8vh;font-size:1.8vh;color:var(--muted);font-variant-numeric:tabular-nums}
+.times span:last-child{text-align:right}
+
+#idle{position:absolute;left:5vh;bottom:5vh;font-size:2.4vh;font-weight:600;letter-spacing:.24em;text-transform:uppercase;
+  color:var(--muted);opacity:0;transition:opacity 1.5s ease}
+body.idle #idle{opacity:.7}
+</style>
+</head>
+<body class="idle">
+<div id="glow"></div>
+<div class="scene"><div class="layer l1"></div><div class="layer l2"></div></div>
+<div class="scene"><div class="layer l1"></div><div class="layer l2"></div></div>
+<div id="veil"></div>
+<div id="dock">
+  <div id="card">
+    <div id="thumb"></div>
+    <div class="tx">
+      <div id="song"><svg id="pz" viewBox="0 0 24 24"><path d="M6.5 5h4v14h-4zM13.5 5h4v14h-4z"/></svg><span id="title"></span></div>
+      <div id="meta"></div>
+      <div class="bar"><i id="fill"></i></div>
+      <div class="times"><span id="t1"></span><span id="n"></span><span id="t2"></span></div>
+    </div>
+  </div>
+</div>
+<div id="idle">Daily Music</div>
+<audio id="au"></audio>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = t => { t = Math.max(0, Math.floor(t || 0)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); };
+const cssUrl = u => 'url("' + String(u).replace(/["\\]/g, encodeURIComponent) + '")';
+const params = new URLSearchParams(location.search);
+const DEMO = params.has('demo');
+
+/* ---------- wallpaper ---------- */
+let scene = 0, artNow;
+function setArt(url){
+  if (url === artNow) return;
+  artNow = url;
+  $('thumb').style.backgroundImage = url ? cssUrl(url) : '';
+  if (!url) return;
+  const img = new Image();
+  img.onload = () => {
+    if (artNow !== url) return;
+    scene ^= 1;
+    const scenes = document.querySelectorAll('.scene');
+    scenes[scene].querySelectorAll('.layer').forEach(l => { l.style.backgroundImage = cssUrl(url); });
+    scenes.forEach((s, i) => s.classList.toggle('on', i === scene));
+  };
+  img.src = url;      // if it can't load, the moving glow stays
+}
+
+/* ---------- the card ---------- */
+let songKey = '', stateNow = '', idleSince = 0, dimT;
+function wake(){     // full brightness for a while after something changes, then step back
+  $('card').classList.remove('dim');
+  clearTimeout(dimT);
+  dimT = setTimeout(() => $('card').classList.add('dim'), 15000);
+}
+function show(s){
+  if (s.state === 'idle'){
+    if (!idleSince) idleSince = Date.now();
+    if (Date.now() - idleSince < 8000) return;      // between albums: don't flicker
+    document.body.classList.add('idle');
+    document.body.classList.remove('paused');
+    $('card').classList.remove('show');
+    songKey = ''; stateNow = 'idle';
+    return;
+  }
+  idleSince = 0;
+  document.body.classList.remove('idle');
+  document.body.classList.toggle('paused', s.state === 'paused');
+  const key = [s.title, s.artist, s.album].join('|');
+  if (key !== songKey || s.state !== stateNow) wake();
+  songKey = key; stateNow = s.state;
+  $('title').textContent = s.title || s.album || '';
+  $('meta').textContent = [s.artist, s.album].filter(Boolean).join(' · ');
+  const live = s.dur > 0, pos = live ? Math.min(Math.max(s.pos, 0), s.dur) : 0;
+  $('fill').style.width = live ? (100 * pos / s.dur) + '%' : '0%';
+  $('t1').textContent = live ? fmt(pos) : '';
+  $('t2').textContent = live ? '-' + fmt(s.dur - pos) : '';
+  $('n').textContent = s.n || '';
+  setArt(s.art || null);
+  $('card').classList.add('show');
+}
+setInterval(() => {   // drift the card a few pixels every few minutes (no burn-in)
+  document.documentElement.style.setProperty('--dx', Math.round(Math.random() * 24) + 'px');
+  document.documentElement.style.setProperty('--dy', -Math.round(Math.random() * 18) + 'px');
+}, 240000);
+
+/* ---------- what's playing ---------- */
+let pm;
+function read(){
+  const info = pm.getMediaInformation();
+  const st = pm.getPlayerState();
+  if (!info || st === cast.framework.messages.PlayerState.IDLE) return {state: 'idle'};
+  const md = info.metadata || {}, cd = info.customData || {};
+  let now = pm.getCurrentTimeSec() || 0, dur = pm.getDurationSec() || info.duration || 0;
+  let title = md.title || '', n = '';
+  if (Array.isArray(cd.offsets) && Array.isArray(cd.titles) && cd.offsets.length){
+    // a gapless album is one long stream: the song comes from the position
+    let k = 0;
+    while (k + 1 < cd.offsets.length && cd.offsets[k + 1] <= now + 0.25) k++;
+    title = cd.titles[k] || title;
+    dur = (cd.durs || [])[k] || 0;
+    now -= cd.offsets[k];
+    n = (k + 1) + ' / ' + cd.titles.length;
+  } else {
+    try {
+      const q = pm.getQueueManager(), items = q && q.getItems();
+      if (items && items.length > 1) n = (q.getCurrentItemIndex() + 1) + ' / ' + items.length;
+    } catch (e) {}
+  }
+  return {
+    state: st === cast.framework.messages.PlayerState.PAUSED ? 'paused' : 'playing',
+    title, artist: md.artist || md.albumArtist || '', album: md.albumName || '',
+    art: md.images && md.images[0] && md.images[0].url, pos: now, dur, n,
+  };
+}
+
+function demo(){      // ?demo&art=<image url>&title=...&artist=...&album=...
+  const t = (Date.now() / 1000) % 200;
+  return {state: params.has('paused') ? 'paused' : 'playing', title: params.get('title') || 'Song title',
+          artist: params.get('artist') || 'Artist', album: params.get('album') || 'Album',
+          art: params.get('art'), pos: t, dur: 200, n: '3 / 11'};
+}
+
+if (DEMO){
+  setInterval(() => show(demo()), 500);
+} else {
+  const ctx = cast.framework.CastReceiverContext.getInstance();
+  pm = ctx.getPlayerManager();
+  pm.setMediaElement($('au'));
+  const opts = new cast.framework.CastReceiverOptions();
+  opts.skipPlayersLoad = true;      // plain audio files only: no need for the streaming players
+  opts.statusText = 'Daily Music';
+  ctx.start(opts);
+  setInterval(() => show(read()), 500);
+}
+</script>
+</body>
+</html>
