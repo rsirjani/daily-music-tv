@@ -35,6 +35,23 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07070a;col
 body.paused .layer,body.paused #glow{animation-play-state:paused}
 body.paused #veil{background-color:rgba(0,0,0,.28)}
 
+/* --- photo slideshow (when the helper sends a photo folder): slow pan and zoom, cross-fades --- */
+.slide{position:absolute;inset:0;overflow:hidden;opacity:0;transition:opacity 3s ease}
+.slide.on{opacity:1}
+.slide .bg{position:absolute;inset:-8%;background:center/cover no-repeat;filter:blur(50px) brightness(.5) saturate(1.2);display:none}
+.slide.portrait .bg{display:block}
+.slide .fg{position:absolute;inset:0;background:center/cover no-repeat;will-change:transform}
+.slide.portrait .fg{background-size:contain}
+@keyframes kb{from{transform:scale(var(--z0)) translate(var(--x0),var(--y0))}
+              to{transform:scale(var(--z1)) translate(var(--x1),var(--y1))}}
+body:not(.photos) .slide{opacity:0}
+body.photos .scene,body.photos #glow{opacity:0}
+body.photos #veil{opacity:.45}
+#shade{position:absolute;inset:0;opacity:0;transition:opacity 2s ease;
+  background:linear-gradient(20deg,rgba(0,0,0,.62) 0%,rgba(0,0,0,.25) 30%,rgba(0,0,0,0) 50%)}
+body.photos #shade{opacity:1}
+body.photos #card{background:rgba(10,10,14,.5)}
+
 /* --- the corner card (moves a few pixels now and then so nothing burns in) --- */
 #dock{position:absolute;left:5vh;bottom:5vh;transform:translate(var(--dx),var(--dy));transition:transform 6s ease}
 #card{display:flex;align-items:center;gap:2.6vh;padding:2.2vh 3.2vh 2.2vh 2.2vh;border-radius:2.6vh;
@@ -63,7 +80,10 @@ body.idle #idle{opacity:.7}
 <div id="glow"></div>
 <div class="scene"><div class="layer l1"></div><div class="layer l2"></div></div>
 <div class="scene"><div class="layer l1"></div><div class="layer l2"></div></div>
+<div class="slide"><div class="bg"></div><div class="fg"></div></div>
+<div class="slide"><div class="bg"></div><div class="fg"></div></div>
 <div id="veil"></div>
+<div id="shade"></div>
 <div id="dock">
   <div id="card">
     <div id="thumb"></div>
@@ -102,6 +122,54 @@ function setArt(url){
   img.src = url;      // if it can't load, the moving glow stays
 }
 
+/* ---------- photo slideshow ---------- */
+// The helper says where photos come from (customData.photos): ?n=0,1,2... in its shuffled order.
+let photoBase = null, photoSec = 30, photoN = Math.floor(Math.random() * 1e5), photoT, slot = 0, photoFails = 0;
+function setPhotos(base, sec){
+  photoSec = Math.max(8, sec || 30);
+  if ((base || null) === photoBase) return;
+  photoBase = base || null;
+  clearTimeout(photoT);
+  if (photoBase) nextPhoto(); else document.body.classList.remove('photos');
+}
+function nextPhoto(){
+  clearTimeout(photoT);
+  if (!photoBase) return;
+  const url = photoBase + (photoBase.includes('?') ? '&' : '?') + 'n=' + (photoN++);
+  const img = new Image();
+  img.onload = () => {
+    photoFails = 0;
+    showPhoto(url, img.naturalWidth / Math.max(1, img.naturalHeight));
+    photoT = setTimeout(nextPhoto, photoSec * 1000);
+  };
+  img.onerror = () => {          // NAS asleep or no photos: album-art wallpaper meanwhile
+    if (++photoFails >= 2) document.body.classList.remove('photos');
+    photoT = setTimeout(nextPhoto, photoFails >= 2 ? 120000 : 5000);
+  };
+  img.src = url;
+}
+function showPhoto(url, aspect){
+  const slides = document.querySelectorAll('.slide');
+  slot ^= 1;
+  const s = slides[slot], fg = s.querySelector('.fg'), bg = s.querySelector('.bg');
+  fg.style.backgroundImage = bg.style.backgroundImage = cssUrl(url);
+  s.classList.toggle('portrait', aspect < 1.2);           // tall photos: whole photo, blurred copy behind
+  const r = Math.random, a = r() * 2 * Math.PI, d = 1.5 + r() * 1.5;   // drift direction and distance (%)
+  const z0 = 1.03 + r() * 0.04, z1 = z0 + 0.07 + r() * 0.05;
+  const zoomOut = r() < 0.35;
+  fg.style.setProperty('--z0', zoomOut ? z1 : z0);
+  fg.style.setProperty('--z1', zoomOut ? z0 : z1);
+  fg.style.setProperty('--x0', (-Math.cos(a) * d).toFixed(2) + '%');
+  fg.style.setProperty('--y0', (-Math.sin(a) * d).toFixed(2) + '%');
+  fg.style.setProperty('--x1', (Math.cos(a) * d).toFixed(2) + '%');
+  fg.style.setProperty('--y1', (Math.sin(a) * d).toFixed(2) + '%');
+  fg.style.animation = 'none';
+  void fg.offsetWidth;                                     // restart the pan and zoom
+  fg.style.animation = `kb ${photoSec + 4}s linear forwards`;
+  slides.forEach((x, i) => x.classList.toggle('on', i === slot));
+  document.body.classList.add('photos');
+}
+
 /* ---------- the card ---------- */
 let songKey = '', stateNow = '', idleSince = 0, dimT;
 function wake(){     // full brightness for a while after something changes, then step back
@@ -133,6 +201,7 @@ function show(s){
   $('t2').textContent = live ? '-' + fmt(s.dur - pos) : '';
   $('n').textContent = s.n || '';
   setArt(s.art || null);
+  setPhotos(s.photos, s.photoSec);
   $('card').classList.add('show');
 }
 setInterval(() => {   // drift the card a few pixels every few minutes (no burn-in)
@@ -167,14 +236,16 @@ function read(){
     state: st === cast.framework.messages.PlayerState.PAUSED ? 'paused' : 'playing',
     title, artist: md.artist || md.albumArtist || '', album: md.albumName || '',
     art: md.images && md.images[0] && md.images[0].url, pos: now, dur, n,
+    photos: cd.photos, photoSec: cd.photoSeconds,
   };
 }
 
-function demo(){      // ?demo&art=<image url>&title=...&artist=...&album=...
+function demo(){      // ?demo&art=<image url>&title=...&artist=...&album=...&photos=<photo url>&sec=
   const t = (Date.now() / 1000) % 200;
   return {state: params.has('paused') ? 'paused' : 'playing', title: params.get('title') || 'Song title',
           artist: params.get('artist') || 'Artist', album: params.get('album') || 'Album',
-          art: params.get('art'), pos: t, dur: 200, n: '3 / 11'};
+          art: params.get('art'), pos: t, dur: 200, n: '3 / 11',
+          photos: params.get('photos'), photoSec: +params.get('sec') || 30};
 }
 
 if (DEMO){
