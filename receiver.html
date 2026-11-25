@@ -50,7 +50,8 @@ body.photos #veil{opacity:.45}
 #shade{position:absolute;inset:0;opacity:0;transition:opacity 2s ease;
   background:linear-gradient(20deg,rgba(0,0,0,.62) 0%,rgba(0,0,0,.25) 30%,rgba(0,0,0,0) 50%)}
 body.photos #shade{opacity:1}
-body.photos #card{background:rgba(10,10,14,.5)}
+body.photos #card{background:rgba(10,10,14,.62)}
+body.photos #card.show.dim{opacity:.78}      /* stays readable over bright photos */
 
 /* --- the corner card (moves a few pixels now and then so nothing burns in) --- */
 #dock{position:absolute;left:5vh;bottom:5vh;transform:translate(var(--dx),var(--dy));transition:transform 6s ease}
